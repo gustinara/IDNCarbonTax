@@ -3,9 +3,8 @@ packages = c("tidyverse",
              "openxlsx",
              "ggthemes",
              "magrittr",
-             "diagonals",
+             "Matrix",
              "rsdmx",
-             "ggrepel",
              "hrbrthemes",
              "kableExtra",
              "viridis")
@@ -25,11 +24,11 @@ package.check = lapply(
 
 # 1. Metadata --------- 
 ## 1.1. Sector List ------
-products <- read.delim(paste0("Data/IOT_2019_pxp/products.txt", sep = ""), stringsAsFactors = FALSE) %>% 
+products <- read.delim(paste0("Data/IOT_", 2019, "_pxp/products.txt", sep = ""), stringsAsFactors = FALSE) %>% 
   rename(sector = 2)
 
 ## 1.2. Country List -----
-countries <- read.delim(paste0("Data/IOT_2019_pxp/unit.txt", sep = ""), stringsAsFactors = FALSE) %>% 
+countries <- read.delim(paste0("Data/IOT_", 2019, "_pxp/unit.txt", sep = ""), stringsAsFactors = FALSE) %>% 
   select(region) %>% 
   distinct()
 
@@ -43,7 +42,7 @@ region_codenr <- order %>%
   unite("reg_CodeNr", region:CodeNr, sep = "_")
 
 ## Country with Full Name
-region_full <- read.delim(paste0("Data/IOT_2019_pxp/region.txt"), stringsAsFactors = FALSE) %>% 
+region_full <- read.delim(paste0("Data/IOT_", 2019, "_pxp/region.txt"), stringsAsFactors = FALSE) %>% 
   set_colnames(c("region", "region_full")) %>% 
   
   left_join(countries, ., by = c("region"))
@@ -54,52 +53,43 @@ electricity_sectors <- products[128:139,] %>%
   as_vector()
 
 # 2. Data Preparation -------
-## 2.1. gross output vector; EXIOBASE 3.8.2 (Million Euro) -----
-x <- read.delim(paste0("Data/IOT_2019_pxp/x.txt", sep = ""), stringsAsFactors = FALSE) %>% 
-  mutate(indout = as.numeric(indout)) %>% 
-  right_join(order %>% 
-               select(-CodeNr), ., by = c("region", "sector"))# Adding Country-Sector columns
-
-# Joining the gross output of liquefied petroleum gas to liquid fuel to form "fuel" product (private vehicle and cooking fuel)
-x[8467,3] <- x[8467,3] + x[8475,3] # Joining the output of liquefied petroleum gas (row 8475) to liquid fuel (row 8467)
-x[8475,3] <- 0 # setting the output of liquefied petroleum gas to 0
-
-# 8467 motor gasoline
-# 8475 LPG
-
-## 2.2. direct CO2 emissions vector; EXIOBASE 3.8.2 (kg CO2) ----------
-f <- read.delim(paste0("Data/IOT_2019_pxp/satellite/F.txt", sep = ""), stringsAsFactors = FALSE, skip = 2) %>% 
-  filter(grepl("CO2", stressor)) %>%  # retrieving rows containing relevant CO2 emissions categories
-  select(-stressor) %>% 
-  colSums() %>% 
-  data.frame() %>% 
-  rename(f = 1) %>% 
-  bind_cols(order, .) %>% 
-  left_join(x, by = c("region", "sector")) %>% # joining direct emissions with gross output
-  select(region, sector, f, indout) %>% 
-  mutate(f = case_when(indout == 0 ~ 0, indout != 0 ~ f)) # setting emissions value with 0 gross output to 0
-
-# Joining the direct CO2 emissions of liquefied petroleum gas to liquid fuel to form "fuel" product (private vehicle and cooking fuel)
-f[8467,3] <- f[8467,3] + f[8475,3] # Joining the direct CO2 emissions of liquefied petroleum gas (row 8475) to liquid fuel (row 8467)
-f[8475,3] <- 0 # setting the direct CO2 emissions of liquefied petroleum gas to 0
-
-## 2.3. emissions intensity of economic output vector; q = f/x; EXIOBASE 3.8.2 (kg/million Euro) -------
-q <- f %>% 
-  mutate(q = (f)/indout, # calculating emissions intensity
-         q = replace(q, is.na(q), 0)) %>%  # removing possible NA values
-  select(q)
-
-## 2.4 final demand matrix; EXIOBASE 3.8.2 (million Euro) ---------
+## 2.1 final demand matrix; EXIOBASE 3.8.2 (million Euro) ---------
 y <- read.delim(paste0("Y.txt", sep = ""), stringsAsFactors = FALSE) %>% 
   filter(!(region %in% c("category", "region"))) %>% # removing unused rows
   rename("sector" = "X") %>% 
   left_join(order, by = c("region", "sector")) %>% # joining sector Order data with sector code
   select(all_of((countries$region))) %>% # selecting only household final demand category
   sapply(., as.numeric) %>% # from character to numeric
-  as.matrix()
+  data.frame() %>% 
+  select(ID) %>% 
+  bind_cols(order, .)
+
+y_gas_idn <- y %>% 
+  filter(sector == "Motor Gasoline") %>% 
+  rename(gas = 4)
+
+y_fuel_idn <- y %>%
+  filter(sector == "Liquefied Petroleum Gases (LPG)") %>% 
+  rename(fuel = 4)
+
+y_gasfuel_idn <- y_gas_idn %>% 
+  bind_cols(y_fuel_idn %>% 
+              select(fuel)) %>% 
+  mutate(gasfuel = gas + fuel) %>% 
+  select(-gas, -fuel)
+
+y_gasfuel_join <- y %>% 
+  mutate(ID = case_when(sector == "Motor Gasoline" ~ 0, sector != "Motor Gasoline" ~ ID),
+         ID = case_when(sector == "Liquefied Petroleum Gases (LPG)" ~ 0, sector != "Liquefied Petroleum Gases (LPG)" ~ ID)) %>%
+  left_join(., y_gasfuel_idn, by = c("region", "sector", "CodeNr")) %>% 
+  mutate(gasfuel = replace_na(gasfuel, 0)) %>% 
+  mutate(ID = ID + gasfuel) %>% 
+  select(-gasfuel)
+
 
 # total household final demand of Indonesia (200 x 1)
 y_id <- y %>% 
+  select(ID) %>% 
   as.matrix() %>% 
   set_rownames(order$CodeNr) %>% 
   rowsum(., row.names(.), reorder = FALSE) %>% 
@@ -111,33 +101,81 @@ y_id <- y %>%
 y_id[67,] <- y_id[67,] + y_id[75,] # Joining the final demand of liquefied petroleum gas (row 75) to motor gasoline (row 67)
 y_id[c(75),] <- 0 # setting the final demand of liquefied petroleum gas to 0
 
+y_idn_share <- ((y_gasfuel_join %>% 
+                   select(ID))/(do.call(rbind, replicate(49, y_id, simplify = FALSE)))) %>% 
+  mutate(ID = replace_na(ID, 0)) %>% 
+  as_vector()
+
+## 2.2 gross output vector; EXIOBASE 3.8.2 (Million Euro) -----
+x <- read.delim(paste0("Data/IOT_2019_pxp/x.txt", sep = ""), stringsAsFactors = FALSE) %>% 
+  mutate(indout = as.numeric(indout)) %>% 
+  right_join(order %>% 
+               select(-CodeNr), ., by = c("region", "sector"))# Adding Country-Sector columns
+
+x_gas_idn <- x %>% 
+  filter(sector == "Motor Gasoline") %>% 
+  rename(gas = 3)
+
+x_fuel_idn <- x %>%
+  filter(sector == "Liquefied Petroleum Gases (LPG)") %>% 
+  rename(fuel = 3)
+
+x_gasfuel_idn <- x_gas_idn %>% 
+  bind_cols(x_fuel_idn %>% 
+              select(fuel)) %>% 
+  mutate(gasfuel = gas + fuel) %>% 
+  select(-gas, -fuel)
+
+x_gasfuel_join <- x %>% 
+  mutate(indout = case_when(sector == "Motor Gasoline" ~ 0, sector != "Motor Gasoline" ~ indout),
+         indout = case_when(sector == "Liquefied Petroleum Gases (LPG)" ~ 0, sector != "Liquefied Petroleum Gases (LPG)" ~ indout)) %>%
+  left_join(., x_gasfuel_idn, by = c("region", "sector")) %>% 
+  mutate(gasfuel = replace_na(gasfuel, 0)) %>% 
+  mutate(indout = indout + gasfuel)
+
+## 2.3 direct CO2 emissions vector; EXIOBASE 3.8.2 (kg CO2) ----------
+f <- read.delim(paste0("Data/IOT_2019_pxp/satellite/F.txt", sep = ""), stringsAsFactors = FALSE, skip = 2) %>% 
+  filter(grepl("CO2", stressor)) %>%  # retrieving rows containing relevant CO2 emissions categories
+  select(-stressor) %>% 
+  colSums() %>% 
+  data.frame() %>% 
+  rename(f = 1) %>% 
+  bind_cols(order, .) %>% 
+  left_join(x_gasfuel_join, by = c("region", "sector")) %>% # joining direct emissions with gross output
+  select(region, sector, f, indout) %>% 
+  mutate(f = case_when(indout == 0 ~ 0, indout != 0 ~ f))  # setting emissions value with 0 gross output to 0
+
+f_gas_idn <- f %>% 
+  filter(sector == "Motor Gasoline") %>% 
+  rename(gas = 3)
+
+f_fuel_idn <- f %>%
+  filter(sector == "Liquefied Petroleum Gases (LPG)") %>% 
+  rename(fuel = 3)
+
+f_gasfuel_idn <- f_gas_idn %>% 
+  bind_cols(f_fuel_idn %>% 
+              select(fuel)) %>% 
+  mutate(gasfuel = gas + fuel) %>% 
+  select(-gas, -fuel)
+
+f_gasfuel_join <- f %>% 
+  mutate(f = case_when(sector == "Motor Gasoline" ~ 0, sector != "Motor Gasoline" ~ f),
+         f = case_when(sector == "Liquefied Petroleum Gases (LPG)" ~ 0, sector != "Liquefied Petroleum Gases (LPG)" ~ f)) %>%
+  left_join(., x_gasfuel_idn, by = c("region", "sector")) %>% 
+  mutate(gasfuel = replace_na(gasfuel, 0)) %>% 
+  mutate(f = f + gasfuel)
+
+## 2.4 emissions intensity of economic output vector; q = f/x; EXIOBASE 3.8.2 (kg/million Euro) -------
+q <- f_gasfuel_join %>% 
+  mutate(q = (f)/indout, # calculating emissions intensity
+         q = replace(q, is.na(q), 0)) %>%  # removing possible NA values
+  select(q)
+
 ## 2.5 Leontief inverse matrix; EXIOBASE 3.8.2 ---------
 L <- readRDS("Data/L.rds")
 
-## 2.6 household direct emissions -----
-# loading household direct emissions raw data (kg CO2)
-HHE <- read.delim(paste0("Data/IOT_2019_pxp/satellite/F_Y.txt", sep = ""), stringsAsFactors = FALSE) %>% 
-  select(region, all_of(countries$region)) %>% 
-  filter(!(region %in% c("stressor", "category"))) %>% # removing unused rows
-  rename("stressor" = "region") %>%
-  filter(grepl("CO2", stressor)) %>% # getting rows containing relevant CO2 emissions categories
-  select(-stressor) %>% 
-  mutate(across(everything(), as.numeric)) # converting character into numeric
-
-# preparing household direct emissions data of Indonesia
-HHE_IDN <- HHE %>% 
-  colSums() %>% 
-  data.frame() %>% 
-  rename(HHE = 1) %>% 
-  rownames_to_column() %>% 
-  rename(region = 1) %>% 
-  mutate(CodeNr = "p23.20.a") %>% 
-  filter(region == "ID") %>% 
-  select(CodeNr, HHE)
-
-rm(HHE)
-
-## 2.7. Household expenditure Survey Database ------
+## 2.6 Household expenditure Survey Database ------
 ### mapping spreadsheet; EXIOBASE - SUSENAS (Indonesia household expenditure survey data) --------
 mapping_EXIOBASE <- read.xlsx("Data/Mapping_IDN_EXIOBASE.xlsx") %>% 
   select(-N, -Product) %>% 
@@ -223,50 +261,79 @@ Hh_IDN_EXIOBASE[,c(75)] <- 0
 
 rm(lpg_join)
 
-# 3. Calculating emissions embodied in households' expenditure------------
-# Emissions embodied in aggregate household final demand in National + Imported Emissions scenario
-# E = q x L x y_hh; where y_hh is the household component of final demand
-E_int <- (as_vector(q) * (L %*% as.matrix(y)))[,"ID"] %>% 
-  as.matrix() %>% 
-  set_rownames(c(order$CodeNr)) %>% 
-  rowsum(., row.names(.), reorder = FALSE) %>% 
+#Mapping household survey expenditure data into exiobase classification
+y_hh_map_exiobase <- data.frame(
+  result = (mapply('*', Hh_IDN_EXIOBASE_rep, y_idn_share))
+  )
+gc()
+
+saveRDS(y_hh_map_exiobase, file = "Data/y_hh_map_exiobase.rds")
+gc()
+
+# 2.7 Emissions Embodied in Household's Expenditure --------
+# I run the following process in partition to make this code executable without using high performance computing apparatus
+
+# Define chunk size
+chunk_size <- 1000
+num_chunks <- ceiling(315672 / chunk_size)
+
+# Initialize result matrix
+e_hh_mapped <- matrix(0, nrow = 315672, ncol = 9800)
+
+# Process in chunks
+for (i in seq(1, 315672, by = chunk_size)) {
+  end_idx <- min(i + chunk_size - 1, 315672)
+  chunk_indices <- i:end_idx
+  e_hh_mapped[chunk_indices, ] <- (as.matrix(y_hh_map_exiobase[chunk_indices,])%*%t(as_vector(q)*L))/(1000000*15589)
+  gc()
+}
+
+rm(y_hh_map_exiobase)
+# 
+# e_hh_mapped12 <- bind_rows(readRDS("Data/e_hh_mapped1.rds"),
+#                          readRDS("Data/e_hh_mapped2.rds"))
+# 
+# gc()
+# 
+# e_hh_mapped34 <- bind_rows(readRDS("Data/e_hh_mapped3.rds"),
+#                          readRDS("Data/e_hh_mapped4.rds"))
+# 
+# gc()
+# 
+# e_hh_mapped <- bind_rows(e_hh_mapped12,e_hh_mapped34)
+# 
+# rm(e_hh_mapped12, e_hh_mapped34)
+# 
+# gc()
+
+## 2.6.1 National + Imported scenario --------
+e_hh_int <- Reduce(`+`, split.default(e_hh_mapped, (seq_along(e_hh_mapped) - 1) %/% 200)) %>% 
+  set_colnames(c(products$CodeNr))
+
+gc()
+
+#e_hh_int <- readRDS("Data/e_hh_int.rds")
+
+## 2.6.2 National carbon tax scenario --------
+e_hh_nat <- e_hh_mapped[,8401:8600]
+
+#e_hh_nat <- readRDS("Data/e_hh_nat.rds")
+
+
+## 2.6.3 Electricity carbon tax scenario ---------
+e_hh_elec <- e_hh_nat[,128:139]
+
+#e_hh_elec <- readRDS("Data/e_hh_elec.rds")
+
+
+## 2.6.4 Fuel carbon tax scenario --------
+e_hh_fuel <- e_hh_nat %>% 
   data.frame() %>% 
-  rename(E_nat_imp = 1)
+  set_colnames(c(products$CodeNr)) %>% 
+  select(p23.20.a, p23.20.e, p23.20.f, p23.20.i, p24.e,
+         p60.1, p60.2, p60.3, p61.1, p61.2, p62, p63)
 
-E_int[67,] <- E_int[67,] + E_int[75,] # joining emissions of LPG product to emissions of liquid fuel product
-
-E_int[c(75),] <- 0 # setting emissions from LPG product to 0
-
-
-# Emissions embodied in aggregate household final demand in National emissions scenario
-E_nat <- (as_vector(q) * (L %*% as.matrix(y)))[,"ID"] %>% 
-  data.frame() %>% 
-  bind_cols(order,.) %>% 
-  filter(region == "ID") %>% 
-  rename(E_nat = 4) %>% 
-  select(E_nat)
-
-E_nat[67,] <- E_nat[67,]  + E_nat[75,] # joining emissions of LPG product to emissions of liquid fuel product
-
-E_nat[c(75),] <- 0 # setting emissions from LPG product to 0
-
-# Emissions embodied in aggregate household final demand in National electricity scenario
-E_nat_e <- E_nat %>% 
-  bind_cols(products,.) %>% 
-  mutate(E_nat_e = case_when(CodeNr %in% c(electricity_sectors) ~ E_nat, TRUE ~ 0)) %>% 
-  select(E_nat_e)
-
-# Emissions embodied in aggregate household final demand in liquid fuel and LPG scenario
-E_nat_l <- E_nat %>% 
-  bind_cols(products,.) %>% 
-  mutate(E_nat_l = case_when(CodeNr %in% c("p23.20.a", # Motor Gasoline
-                                           "p23.20.i", # Liquefied Petroleum Gases (LPG)
-                                           "p60.1", # Railway transport
-                                           "p60.2", # Other land transports
-                                           "p61.1", # Sea transports
-                                           "p61.2", # Inland water transports
-                                           "p62") ~ E_nat, TRUE ~ 0)) %>% # Air transport
-  select(E_nat_l)
+#e_hh_fuel <- readRDS("Data/e_hh_fuel.rds")
 
 
 # Gathering analysis data
@@ -281,41 +348,55 @@ expenditure <- Hh_IDN_EXIOBASE %>%
   bind_cols(., Hh_IDN %>% 
               select(wert))
 
-# emission intensity of aggregate final demand
-agg_f_fd <- bind_cols(products, E_int, E_nat, E_nat_e, E_nat_l) %>% 
-  left_join(HHE_IDN, by = c("CodeNr")) %>% 
-  mutate(HHE = replace(HHE, is.na(HHE), 0)) %>% 
-  bind_cols(., y_id %>% 
-              rename(y_eur = 1)) %>% 
-  mutate(f_int = ((E_nat_imp+HHE)/1000)/(y_eur*1000000*15589), #emission intensity of final demand for international carbon price; ton per idr
-         f_nat = ((E_nat+HHE)/1000)/(y_eur*1000000*15589), #emission intensity of final demand for national carbon price; ton per idr
-         f_nat_e = ((E_nat_e)/1000)/(y_eur*1000000*15589), #emission intensity of final demand for national electricity carbon price; ton per idr
-         f_nat_l = ((E_nat_l+HHE)/1000)/(y_eur*1000000*15589)) %>%   #emission intensity of final demand for national liquid fuel carbon price; ton per idr
-  mutate(across(.cols = everything(), 
-                .fns = function(x) replace(x, is.na(x) | is.infinite(x), 0)))
 
-
-scene <- as.character(c("f_nat", "f_int", "f_nat_e", "f_nat_l"))
-
-c_hh_cons_list <- list()
-
-for (i in scene) {
-  var_name <- paste0("agg_f_fd$", i)
+## 2.6 household direct emissions -----
+# loading household direct emissions raw data (kg CO2)
+HHE <- read.delim(paste0("Data/IOT_2019_pxp/satellite/F_Y.txt", sep = ""), stringsAsFactors = FALSE) %>% 
+  select(region, all_of(countries$region)) %>% 
+  filter(!(region %in% c("stressor", "category"))) %>% # removing unused rows
+  rename("stressor" = "region") %>%
+  filter(grepl("CO2", stressor)) %>% # getting rows containing relevant CO2 emissions categories
+  select(-stressor) %>% 
+  mutate(across(everything(), as.numeric)) %>% # converting character into numeric
+  colSums() %>% 
+  data.frame() %>% 
+  rownames_to_column() %>% 
+  rename(region = 1, HHE = 2) %>% 
+  filter(region == "ID") %>% 
+  select(HHE)
   
-  c_hh_cons_list[[i]] <- t(as_vector(eval(parse(text = var_name))) * t(as.matrix(Hh_IDN_EXIOBASE))) %>% 
-    data.frame() %>% 
-    rowSums() %>% 
-    data.frame() %>% 
-    setNames(i)
-}
+# preparing household direct emissions data of Indonesia
+HHE_IDN <- Hh_IDN_EXIOBASE %>% 
+  select(p23.20.a) %>% 
+  mutate(share = p23.20.a/sum(p23.20.a)) %>% 
+  select(share) %>% 
+  bind_cols(., expenditure %>% 
+              select(wert), HHE) %>% 
+  mutate(s_wert = wert/sum(wert, na.rm = TRUE),
+         e_hh_dir =  HHE / wert * share) %>% 
+  select(e_hh_dir)
 
-
-# Emissions embodied in households' main consumption items
-c_hh_cons <- bind_cols(c_hh_cons_list) %>% 
+# Emissions embodied in households' main consumption items (tonne CO2)
+e_hh_agg <- bind_cols(e_hh_nat %>% 
+                        rowSums() %>% 
+                        data.frame(), e_hh_int %>% 
+                        rowSums() %>% 
+                        data.frame(), e_hh_elec %>% 
+                        rowSums() %>% 
+                        data.frame(), e_hh_fuel %>% 
+                        rowSums() %>% 
+                        data.frame(),
+                      HHE_IDN) %>% 
   set_colnames(c("national",
                  "national_import",
                  "electricity",
-                 "lpg"))
+                 "lpg",
+                 "e_hh_dir")) %>% 
+  mutate(national = national + e_hh_dir,
+         national_import = national_import + e_hh_dir,
+         lpg = lpg + e_hh_dir) %>% 
+  select(-e_hh_dir) %>% 
+  divide_by(1000) 
 
 
 # function to generate results
@@ -326,7 +407,7 @@ swf_decile <- function(tax, tax_scenario, transfer_scenario, percent_transfer){
     group_by(exp_decile) %>% 
     mutate(v_wert = wert/sum(wert, na.rm = TRUE)) %>% #calculating share of households survey weight by quintile
     ungroup() %>% 
-    bind_cols(., c_hh_cons %>%
+    bind_cols(., e_hh_agg %>%
                 select(tax_scenario)) %>% # selecting tax scenario
     mutate(tax_rate = tax * 14860 , # tax rate in million IDR
            tax_emb_cons = tax_rate * eval(parse(text = paste0(tax_scenario))), # calculating tax embodied in expenditure of every household
@@ -380,8 +461,7 @@ df_plot <- swf_decile(tax = 40, # tax rate; input: numeric
 
 
 
-
-pdf("Article/Figures/New/5.1/net_impact.pdf", width = 4.5, height = 4)
+pdf("Article/Figures/New/6.0/net_impact.pdf", width = 4.5, height = 4)
 
 # Plot
 ggplot(df_plot, aes(exp_decile, net_impact, color = Transfer, shape = Transfer)) +
@@ -416,11 +496,12 @@ ggplot(df_plot, aes(exp_decile, net_impact, color = Transfer, shape = Transfer))
 dev.off()
 
 
-
-# 4.2 Carbon tax relative to expenditure ----------
-# households are categorized by income deciles
-tax_rel_exp <-  t(as_vector(agg_f_fd$f_nat) * t(as.matrix(Hh_IDN_EXIOBASE))) %>% # emissions embodied in consumption items (tonne)
-  data.frame() %>% 
+# 4.2 Distribution of carbon tax in consumption items ----------
+tax_emb_cons <- e_hh_nat %>%  # emissions embodied in consumption items (tonne)
+  set_colnames(c(products$CodeNr)) %>% 
+  bind_cols(HHE_IDN,.) %>% 
+  mutate(p23.20.a = p23.20.a + e_hh_dir) %>% 
+  select(-e_hh_dir) %>%  
   mutate(across(1:200, ~ . *40)) %>%  # 40 USD per tonne tax rate
   bind_cols(expenditure %>% 
               select(exp_decile, wert), .) %>% 
@@ -430,95 +511,12 @@ tax_rel_exp <-  t(as_vector(agg_f_fd$f_nat) * t(as.matrix(Hh_IDN_EXIOBASE))) %>%
   select(-wert) %>% 
   transmute(foods = rowSums(select(., c(p01.a:p01.n), c(p15.a:p15.k))), across(-c(c(p01.a:p01.n), c(p15.a:p15.k)))) %>% 
   transmute(electricity = rowSums(select(., p40.11.a:p40.11.l)), across(-c(p40.11.a:p40.11.l))) %>% 
-  transmute(fuel = rowSums(select(., c(p23.20.a, p23.20.e, p23.20.f, p23.20.i, p24.e))), across(-c(p23.20.a, p23.20.e, p23.20.f, p23.20.i, p24.e))) %>% 
-  transmute(other = rowSums(select(., c(5:162))), across(-c(5:162)))  %>% 
-  group_by(exp_decile) %>% 
-  summarise(across(everything(), ~ sum(. * v_wert, na.rm = TRUE)), .groups = 'drop') %>% 
-  ungroup() %>% 
-  select(-v_wert) %>% 
-  set_colnames(c("exp_decile", "other", "fuel", "electricity", "foods")) %>% 
-  pivot_longer(2:5, names_to = "cons_item", values_to = "t") %>% 
-  mutate(cons_item = factor(cons_item, c("electricity",
-                                         "fuel",
-                                         "foods",
-                                         "other"))) %>% 
-  group_by(exp_decile) %>% 
-  mutate(tax_decile = t/sum(t)) %>% 
-  ungroup()
-
-cons <-  Hh_IDN_EXIOBASE %>% 
-  data.frame() %>% 
-  bind_cols(expenditure %>% 
-              select(exp_decile, wert), .) %>% 
-  group_by(exp_decile) %>% 
-  mutate(v_wert = wert/sum(wert, na.rm = TRUE)) %>% #calculating share of households survey weight by quintile
-  ungroup() %>% 
-  select(-wert) %>% 
-  transmute(foods = rowSums(select(., c(p01.a:p01.n), c(p15.a:p15.k))), across(-c(c(p01.a:p01.n), c(p15.a:p15.k)))) %>% 
-  transmute(electricity = rowSums(select(., p40.11.a:p40.11.l)), across(-c(p40.11.a:p40.11.l))) %>% 
-  transmute(fuel = rowSums(select(., c(p23.20.a, p23.20.e, p23.20.f, p23.20.i, p24.e))), across(-c(p23.20.a, p23.20.e, p23.20.f, p23.20.i, p24.e))) %>% 
-  transmute(other = rowSums(select(., c(5:162))), across(-c(5:162))) %>% 
-  group_by(exp_decile) %>% 
-  summarise(across(everything(), ~ sum(. * v_wert, na.rm = TRUE)), .groups = 'drop') %>% 
-  ungroup() %>% 
-  select(-v_wert) %>% 
-  pivot_longer(2:5, names_to = "cons_item", values_to = "cons") %>% 
-  mutate(cons = cons/14680) %>% 
-  mutate(cons_item = factor(cons_item, c("electricity",
-                                         "fuel",
-                                         "foods",
-                                         "other")))
-
-df_join <- tax_rel_exp %>%
-  left_join(cons, by = c("exp_decile", "cons_item")) %>% 
-  group_by(exp_decile) %>% 
-  mutate(rel_tax = t/sum(cons)) %>% 
-  ungroup()
-
-
-pdf("Article/Figures/New/5.1/tax_rel_decile.pdf", width = 5.5, height = 4)
-
-print(
-  ggplot(df_join, aes(x = factor(exp_decile), y = rel_tax, fill = cons_item)) +
-    geom_bar(stat = "identity", position = "stack", width = 0.5) +
-    scale_fill_wsj() +
-    labs(x = "Income decile", y = "Tax/Expenditure", fill = "Consumption item") +
-    scale_y_continuous(labels = scales::percent_format(), breaks = c(0, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12), limits = c(0, 0.12)) +
-    theme_pander(base_family = "Times") + 
-    theme(plot.title = element_text(size = 24, hjust = .5, vjust = 2.5),
-          plot.subtitle = element_text(size = 20, hjust = .5, vjust = 2.5),
-          plot.caption = element_text(vjust = 4.5),
-          plot.background = element_rect(fill = "transparent"),
-          legend.background = element_rect(fill = "transparent"),
-          legend.position = "bottom",
-          legend.title = element_blank(),
-          panel.border = element_rect(color = "white"),
-          panel.spacing.y = unit(1, "lines"),
-          axis.title.x = element_text(size = 12, vjust = -2.5),
-          axis.text.x = element_text(size = 12, vjust = -1.5),
-          axis.title.y = element_text(size = 12),
-          axis.text.y = element_text(size = 12))
-)
-
-dev.off()
-
-
-
-
-# 4.3 Carbon tax embodied in consumption items ----------
-tax_emb_cons <-  t(as_vector(agg_f_fd$f_nat) * t(as.matrix(Hh_IDN_EXIOBASE))) %>% # emissions embodied in consumption items (tonne)
-  data.frame() %>% 
-  mutate(across(1:200, ~ . *40)) %>%  # 40 USD per tonne tax rate
-  bind_cols(expenditure %>% 
-              select(exp_decile, wert), .) %>% 
-  group_by(exp_decile) %>% 
-  mutate(v_wert = wert/sum(wert, na.rm = TRUE)) %>% #calculating share of households survey weight by quintile
-  ungroup() %>% 
-  select(-wert) %>% 
-  transmute(foods = rowSums(select(., c(p01.a:p01.n), c(p15.a:p15.k))), across(-c(c(p01.a:p01.n), c(p15.a:p15.k)))) %>% 
-  transmute(electricity = rowSums(select(., p40.11.a:p40.11.l)), across(-c(p40.11.a:p40.11.l))) %>% 
-  transmute(fuel = rowSums(select(., c(p23.20.a, p23.20.e, p23.20.f, p23.20.i, p24.e))), across(-c(p23.20.a, p23.20.e, p23.20.f, p23.20.i, p24.e))) %>% 
-  transmute(other = rowSums(select(., c(5:162))), across(-c(5:162)))  %>% 
+  #transmute(fuel = rowSums(select(., c(p23.20.a, p23.20.e, p23.20.f, p23.20.i, p24.e))), across(-c(p23.20.a, p23.20.e, p23.20.f, p23.20.i, p24.e))) %>% 
+  transmute(fuel = rowSums(select(., c(p23.20.a, p23.20.e, p23.20.f, p23.20.i, p24.e,
+                                       p60.1, p60.2, p60.3, p61.1, p61.2, p62, p63))), across(-c(p23.20.a, p23.20.e, p23.20.f, p23.20.i, p24.e,
+                                                                                                 p60.1, p60.2, p60.3, p61.1, p61.2, p62, p63))) %>% 
+  #transmute(other = rowSums(select(., c(5:162))), across(-c(5:162))) %>% 
+  transmute(other = rowSums(select(., c(5:155))), across(-c(5:155))) %>% 
   group_by(exp_decile) %>% 
   summarise(across(everything(), ~ sum(. * v_wert, na.rm = TRUE)), .groups = 'drop') %>% 
   ungroup() %>% 
@@ -533,9 +531,7 @@ tax_emb_cons <-  t(as_vector(agg_f_fd$f_nat) * t(as.matrix(Hh_IDN_EXIOBASE))) %>
   mutate(tax_decile = tax_emb_cons/sum(tax_emb_cons)) %>% 
   ungroup()
 
-
-
-pdf("Article/Figures/New/5.1/tax_emb_cons2.pdf", width = 5.5, height = 3.5)
+pdf("Article/Figures/New/6.0/tax_emb_cons2.pdf", width = 5.5, height = 3.5)
 
 print(
   ggplot(tax_emb_cons, aes(x = factor(exp_decile), y = tax_decile, fill = cons_item)) +
@@ -561,14 +557,40 @@ print(
 
 dev.off()
 
+# 4.3 Average Annual Expenditure --------------
+cons <-  Hh_IDN_EXIOBASE %>% 
+  data.frame() %>% 
+  bind_cols(expenditure %>% 
+              select(exp_decile, wert), .) %>% 
+  group_by(exp_decile) %>% 
+  mutate(v_wert = wert/sum(wert, na.rm = TRUE)) %>% #calculating share of households survey weight by quintile
+  ungroup() %>% 
+  select(-wert) %>% 
+  transmute(foods = rowSums(select(., c(p01.a:p01.n), c(p15.a:p15.k))), across(-c(c(p01.a:p01.n), c(p15.a:p15.k)))) %>% 
+  transmute(electricity = rowSums(select(., p40.11.a:p40.11.l)), across(-c(p40.11.a:p40.11.l))) %>% 
+  #transmute(fuel = rowSums(select(., c(p23.20.a, p23.20.e, p23.20.f, p23.20.i, p24.e))), across(-c(p23.20.a, p23.20.e, p23.20.f, p23.20.i, p24.e))) %>% 
+  transmute(fuel = rowSums(select(., c(p23.20.a, p23.20.e, p23.20.f, p23.20.i, p24.e,
+                                       p60.1, p60.2, p60.3, p61.1, p61.2, p62, p63))), across(-c(p23.20.a, p23.20.e, p23.20.f, p23.20.i, p24.e,
+                                                                                                 p60.1, p60.2, p60.3, p61.1, p61.2, p62, p63))) %>% 
+  #transmute(other = rowSums(select(., c(5:162))), across(-c(5:162))) %>% 
+  transmute(other = rowSums(select(., c(5:155))), across(-c(5:155))) %>% 
+  group_by(exp_decile) %>% 
+  summarise(across(everything(), ~ sum(. * v_wert, na.rm = TRUE)), .groups = 'drop') %>% 
+  ungroup() %>% 
+  select(-v_wert) %>% 
+  pivot_longer(2:5, names_to = "cons_item", values_to = "cons") %>% 
+  mutate(cons = cons/14680) %>% 
+  mutate(cons_item = factor(cons_item, c("electricity",
+                                         "fuel",
+                                         "foods",
+                                         "other")))
 
-# 4.4 Average Annual Expenditure --------------
 cons_share <- cons %>% 
   group_by(exp_decile) %>% 
   mutate(cons_share = cons/sum(cons, na.rm = TRUE)) %>% 
   ungroup()
 
-pdf("Article/Figures/New/5.1/exp_mean.pdf", width = 5.5, height = 4)
+pdf("Article/Figures/New/6.0/exp_mean.pdf", width = 5.5, height = 4)
 
 print(
   ggplot(cons_share, aes(x = factor(exp_decile), y = cons_share, fill = cons_item)) +
@@ -595,8 +617,7 @@ print(
 
 dev.off()
 
-# 4.5 Relative Net Impact; Other Carbon Taxation Scenarios ----
-
+# 4.4 Relative Net Impact; Other Carbon Taxation Scenarios ----
 list_df_scenario <- list()
 list_df_rate <- list()
 
@@ -635,6 +656,7 @@ for (i in tax_rate){
   
 }
 
+
 netimp_all <- bind_rows(list_df_rate) %>% 
   mutate(Scenario = case_when(Scenario == "national" ~ "National",
                               Scenario == "national_import" ~ "National + Import",
@@ -644,7 +666,7 @@ netimp_all <- bind_rows(list_df_rate) %>%
 
 
 # $2 tax rate
-pdf("Article/Figures/New/5.1/net_impact_all_2.pdf", width = 6, height = 8)
+pdf("Article/Figures/New/6.0/net_impact_all_2.pdf", width = 6, height = 8)
 
 # Plot
 ggplot(netimp_all %>% 
@@ -682,8 +704,10 @@ ggplot(netimp_all %>%
 dev.off()
 
 
+
+
 # $40 tax rate
-pdf("Article/Figures/New/5.1/net_impact_all_40.pdf", width = 6, height = 8)
+pdf("Article/Figures/New/6.0/net_impact_all_40.pdf", width = 6, height = 8)
 
 # Plot
 ggplot(netimp_all %>% 
@@ -721,8 +745,10 @@ ggplot(netimp_all %>%
 dev.off()
 
 
+
+
 # $100 tax rate
-pdf("Article/Figures/New/5.1/net_impact_all_100.pdf", width = 6, height = 8)
+pdf("Article/Figures/New/6.0/net_impact_all_100.pdf", width = 6, height = 8)
 
 # Plot
 ggplot(netimp_all %>% 
@@ -762,7 +788,7 @@ dev.off()
 
 
 # $120 tax rate
-pdf("Article/Figures/New/5.1/net_impact_all_120.pdf", width = 6, height = 8)
+pdf("Article/Figures/New/6.0/net_impact_all_120.pdf", width = 6, height = 8)
 
 # Plot
 ggplot(netimp_all %>% 
@@ -800,7 +826,8 @@ ggplot(netimp_all %>%
 dev.off()
 
 
-# 4.6 Stress Test ------------
+
+# 4.5 Stress Test ------------
 fun_stest <- function(scene){
   
   tax_rate <- c(2, 40, 100, 120)
@@ -885,7 +912,7 @@ ggplot_stest <- function(x) {
 df_plot <- fun_stest(scene = "national") 
 
 # Plot
-pdf("Article/Figures/New/5.1/stest_new_nat.pdf", width = 6, height = 8)
+pdf("Article/Figures/New/6.0/stest_new_nat.pdf", width = 6, height = 8)
 ggplot_stest(df_plot)
 dev.off()
 
@@ -893,7 +920,7 @@ dev.off()
 df_plot <- fun_stest(scene = "national_import")
 
 # Plot
-pdf("Article/Figures/New/5.1/stest_new_natimp.pdf", width = 6, height = 8)
+pdf("Article/Figures/New/6.0/stest_new_natimp.pdf", width = 6, height = 8)
 ggplot_stest(df_plot)
 dev.off()
 
@@ -901,7 +928,7 @@ dev.off()
 df_plot <- fun_stest(scene = "electricity")
 
 # Plot
-pdf("Article/Figures/New/5.1/stest_new_elec.pdf", width = 6, height = 8)
+pdf("Article/Figures/New/6.0/stest_new_elec.pdf", width = 6, height = 8)
 ggplot_stest(df_plot)
 dev.off()
 
@@ -909,7 +936,7 @@ dev.off()
 df_plot <- fun_stest(scene = "lpg")
 
 # Plot
-pdf("Article/Figures/New/5.1/stest_new_fuel.pdf", width = 6, height = 8)
+pdf("Article/Figures/New/6.0/stest_new_fuel.pdf", width = 6, height = 8)
 ggplot_stest(df_plot)
 dev.off()
 
@@ -964,7 +991,7 @@ df_join <- fun_stest(scene = "national") %>%
   mutate(scenario = factor(scenario, c("National", "National Electricity"))) %>% 
   mutate(net_impact = net_impact * 100)
 
-pdf("Article/Figures/New/5.1/stest_nat.pdf", width = 8.5, height = 4)
+pdf("Article/Figures/New/6.0/stest_nat.pdf", width = 8.5, height = 4)
 
 ggplot(df_join, aes(exp_decile, Recycling, fill= net_impact)) + 
   geom_tile() +
@@ -991,90 +1018,6 @@ ggplot(df_join, aes(exp_decile, Recycling, fill= net_impact)) +
        x = "Income decile") 
 
 dev.off()
-
-
-
-# BLT cash transfer
-fun_stest <- function(scene){
-  
-  tax_rate <- c(2, 40, 100, 120)
-  
-  percent_trf <- c(0, 25, 75, 100)
-  
-  list_df_trf <- list()
-  list_df_tax <- list()
-  
-  for (i in tax_rate){
-    for (j in percent_trf){
-      
-      list_df_trf[[as.character(j)]] <- swf_decile(tax = i, # tax rate; input: numeric
-                                                   tax_scenario = scene, # input: national, national_import, electricity, lpg
-                                                   transfer_scenario = "blt", #input: no_transfer, uniform, poorest20, poorest40, blt
-                                                   percent_transfer = j) %>% 
-        select(exp_decile, net_impact) %>% 
-        mutate(percent_trf = as.character(j))
-      
-      
-    }
-    
-    list_df_tax[[as.character(i)]]  <- bind_rows(list_df_trf) %>% 
-      mutate(tax_rate = as.character(i))
-    
-  }
-  
-  df_plot <- bind_rows(list_df_tax) %>% 
-    mutate(tax_rate = case_when(tax_rate == "2" ~ "$2/tonne",
-                                tax_rate == "40" ~ "$40/tonne",
-                                tax_rate == "100" ~ "$100/tonne",
-                                tax_rate == "120" ~ "$120/tonne")) %>% 
-    mutate(percent_trf = factor(percent_trf, c("0", "25", "75", "100")),
-           tax_rate = factor(tax_rate, c("$2/tonne", "$40/tonne", "$100/tonne", "$120/tonne"))) %>% 
-    rename("Recycling" = "percent_trf")
-  
-  return(df_plot)
-  
-}
-
-df_join <- fun_stest(scene = "national") %>% 
-  mutate(scenario = "National") %>% 
-  bind_rows(., fun_stest(scene = "electricity") %>% 
-              mutate(scenario = "National Electricity")) %>% 
-  filter(exp_decile %in% c(1,2,3,4)) %>%
-  filter(tax_rate == "$40/tonne") %>% 
-  mutate(scenario = factor(scenario, c("National", "National Electricity"))) %>% 
-  distinct(net_impact, .keep_all = TRUE) %>% 
-  mutate(Recycling = c("BLT")) %>% 
-  mutate(net_impact = net_impact * 100)
-
-pdf("Article/Figures/New/5.1/stest_nat_blt.pdf", width = 8.5, height = 2.2)
-
-ggplot(df_join, aes(exp_decile, Recycling, fill= net_impact)) + 
-  geom_tile() +
-  geom_text(data = df_join, aes(label = round(net_impact, 2), color = ifelse(net_impact <= 10, "white", "black")),
-            family = "Times")+
-  scale_fill_viridis(discrete=FALSE, option = "magma") +
-  scale_color_manual(values = c("black", "white")) +
-  theme_pander() + 
-  facet_wrap(~scenario, scales = "fixed", ncol = 2) +
-  theme(text = element_text(family = "Times"),
-        axis.title.x = element_text(vjust = -2),
-        plot.title = element_text(size = 24, hjust = .5, vjust = 2.5),
-        plot.subtitle = element_text(size = 20, hjust = .5, vjust = 2.5),
-        plot.caption = element_text(vjust = 4.5),
-        plot.background = element_rect(fill = "transparent"),
-        legend.background = element_rect(fill = "transparent"),
-        legend.position = "none",
-        legend.title = element_blank(),
-        panel.border = element_rect(color = "white"),
-        panel.spacing.y = unit(1, "lines"),
-        plot.margin = margin(1, 1, 1, 1, "cm"),
-        strip.text.x = element_text(size = 14)) +
-  labs(y = " ",
-       x = "Income decile") 
-
-dev.off()
-
-
 
 
 # 5. Tables ------------------------
@@ -1149,7 +1092,7 @@ print(
   latex.environments = "center",
   caption.placement = "top",
   math.style.exponents = TRUE,
-  file = "Article/Tables/New/netimp_all.tex")
+  file = "Article/Tables/New/6.0/netimp_all_2.tex")
 
 # $40 tax rate
 print(
@@ -1168,7 +1111,7 @@ print(
   latex.environments = "center",
   caption.placement = "top",
   math.style.exponents = TRUE,
-  file = "Article/Tables/New/netimp_all.tex")
+  file = "Article/Tables/New/netimp_all_40.tex")
 
 # $100 tax rate
 print(
@@ -1187,7 +1130,7 @@ print(
   latex.environments = "center",
   caption.placement = "top",
   math.style.exponents = TRUE,
-  file = "Article/Tables/New/netimp_all.tex")
+  file = "Article/Tables/New/netimp_all_100.tex")
 
 # $120 tax rate
 print(
@@ -1206,14 +1149,19 @@ print(
   latex.environments = "center",
   caption.placement = "top",
   math.style.exponents = TRUE,
-  file = "Article/Tables/New/netimp_all.tex")
+  file = "Article/Tables/New/netimp_all_120.tex")
 
 # 5.2 Products contribution to relative carbon tax ------------
-tab_inc_sect <-  t(as_vector(agg_f_fd$f_nat) * t(as.matrix(Hh_IDN_EXIOBASE))) %>% # emissions embodied in consumption items (tonne)
-  data.frame() %>% 
+tab_inc_sect <- e_hh_nat %>%  # emissions embodied in consumption items (tonne)
+  set_colnames(c(products$CodeNr)) %>% 
+  bind_cols(HHE_IDN,.) %>% 
+  mutate(p23.20.a = p23.20.a + e_hh_dir) %>% 
+  select(-e_hh_dir) %>%  
+  # t(as_vector(agg_f_fd$f_nat) * t(as.matrix(Hh_IDN_EXIOBASE))) %>% # emissions embodied in consumption items (tonne)
+  # data.frame() %>% 
   bind_cols(expenditure %>% 
               select(exp_decile, wert, consumption), .) %>% 
-  mutate(across(4:203, ~ . *(40*14680)/(consumption))) %>% 
+  mutate(across(4:203, ~ . *(40*14860)/(consumption))) %>% 
   group_by(exp_decile) %>% 
   mutate(v_wert = wert/sum(wert, na.rm = TRUE)) %>% #calculating share of households survey weight by quintile
   ungroup() %>% 
@@ -1252,12 +1200,10 @@ tab_inc_sect <- tab_inc_sect %>%
   top_n(., 10) %>% 
   bind_rows(inc_tot, .) %>% 
   as_tibble() %>% 
-  mutate(across(2:11, ~ . * 100)) 
+  mutate(across(2:11, ~ . * 100 /1000)) 
 
 tab_inc_sect[,2:11] <- round(tab_inc_sect[,2:11], 2) %>% 
   as_tibble()
-
-
 
 print(
   kable(tab_inc_sect, 
@@ -1276,12 +1222,17 @@ print(
 
 
 
-# 5.4 Tax embodied in products ------
-tax_emb_prod <-  t(as_vector(agg_f_fd$f_nat) * t(as.matrix(Hh_IDN_EXIOBASE))) %>% # emissions embodied in consumption items (tonne)
-  data.frame() %>% 
+# 5.3 Tax embodied in products ------
+tax_emb_prod <- e_hh_nat %>%  # emissions embodied in consumption items (tonne)
+  set_colnames(c(products$CodeNr)) %>% 
+  bind_cols(HHE_IDN,.) %>% 
+  mutate(p23.20.a = p23.20.a + e_hh_dir) %>% 
+  select(-e_hh_dir) %>%  
+  # t(as_vector(agg_f_fd$f_nat) * t(as.matrix(Hh_IDN_EXIOBASE))) %>% # emissions embodied in consumption items (tonne)
+  # data.frame() %>% 
   bind_cols(expenditure %>% 
               select(exp_decile, wert, consumption), .) %>% 
-  mutate(across(4:203, ~ . *(40))) %>% 
+  mutate(across(4:203, ~ . *(40)/1000)) %>% 
   group_by(exp_decile) %>% 
   mutate(v_wert = wert/sum(wert, na.rm = TRUE)) %>% #calculating share of households survey weight by quintile
   ungroup() %>% 
@@ -1404,7 +1355,7 @@ exp_prod <-  Hh_IDN_EXIOBASE %>%
   data.frame() %>% 
   bind_cols(expenditure %>% 
               select(exp_decile, wert, consumption), .) %>% 
-  mutate(across(4:203, ~ . /14680)) %>% 
+  mutate(across(4:203, ~ . /14860)) %>% 
   group_by(exp_decile) %>% 
   mutate(v_wert = wert/sum(wert, na.rm = TRUE)) %>% #calculating share of households survey weight by quintile
   ungroup() %>% 
@@ -1438,9 +1389,6 @@ exp_prod <- exp_prod %>%
 
 exp_prod[,2:6] <- round(exp_prod[,2:6], 1) %>% 
   as_tibble()
-
-
-library(kableExtra)
 
 print(
   kable(exp_prod, 
@@ -1531,6 +1479,46 @@ print(
 
 
 # 5.6 Tab for Fig. 7-10 -----
+fun_stest <- function(scene){
+  
+  tax_rate <- c(2, 40, 100, 120)
+  
+  percent_trf <- c(0, 25, 75, 100)
+  
+  list_df_trf <- list()
+  list_df_tax <- list()
+  
+  for (i in tax_rate){
+    for (j in percent_trf){
+      
+      list_df_trf[[as.character(j)]] <- swf_decile(tax = i, # tax rate; input: numeric
+                                                   tax_scenario = scene, # input: national, national_import, electricity, lpg
+                                                   transfer_scenario = "uniform", #input: no_transfer, uniform, poorest20, poorest40, blt
+                                                   percent_transfer = j) %>% 
+        select(exp_decile, net_impact) %>% 
+        mutate(percent_trf = as.character(j))
+      
+      
+    }
+    
+    list_df_tax[[as.character(i)]]  <- bind_rows(list_df_trf) %>% 
+      mutate(tax_rate = as.character(i))
+    
+  }
+  
+  df_plot <- bind_rows(list_df_tax) %>% 
+    mutate(tax_rate = case_when(tax_rate == "2" ~ "$2/tonne",
+                                tax_rate == "40" ~ "$40/tonne",
+                                tax_rate == "100" ~ "$100/tonne",
+                                tax_rate == "120" ~ "$120/tonne")) %>% 
+    mutate(percent_trf = factor(percent_trf, c("0", "25", "75", "100")),
+           tax_rate = factor(tax_rate, c("$2/tonne", "$40/tonne", "$100/tonne", "$120/tonne"))) %>% 
+    rename("Recycling" = "percent_trf")
+  
+  return(df_plot)
+  
+}
+
 df_stest_nat <- fun_stest(scene = "national") %>% 
   unite("Recycling", Recycling:tax_rate, sep = "_") %>% 
   mutate(net_impact = net_impact * 100) %>% 
@@ -1628,4 +1616,100 @@ print(
 
 
 
+
+########################################################
+
+recyc_2 <- e_hh_agg %>% 
+  mutate(rev_nat_2 = sum(2 * 14860 * national, na.rm = TRUE),
+         rev_int_2 = sum(2 * 14860 * national_import, na.rm = TRUE),
+         rev_elec_2 = sum(2 * 14860 * electricity, na.rm = TRUE),
+         rev_fuel_2 = sum(2 * 14860 * lpg, na.rm = TRUE),
+         nat_2 = (rev_nat_2/nrow(.))/14860,
+         int_2 = (rev_int_2/nrow(.))/14860,
+         elec_2 = (rev_elec_2/nrow(.))/14860,
+         fuel_2 = (rev_fuel_2/nrow(.))/14860)
+
+recyc_40 <- e_hh_agg %>% 
+  mutate(rev_nat_40 = sum(40 * 14860 * national, na.rm = TRUE),
+         rev_int_40 = sum(40 * 14860 * national_import, na.rm = TRUE),
+         rev_elec_40 = sum(40 * 14860 * electricity, na.rm = TRUE),
+         rev_fuel_40 = sum(40 * 14860 * lpg, na.rm = TRUE),
+         nat_40 = (rev_nat_40/nrow(.))/14860,
+         int_40 = (rev_int_40/nrow(.))/14860,
+         elec_40 = (rev_elec_40/nrow(.))/14860,
+         fuel_40 = (rev_fuel_40/nrow(.))/14860)
+
+recyc_100 <- e_hh_agg %>% 
+  mutate(rev_nat_100 = sum(100 * 14860 * national, na.rm = TRUE),
+         rev_int_100 = sum(100 * 14860 * national_import, na.rm = TRUE),
+         rev_elec_100 = sum(100 * 14860 * electricity, na.rm = TRUE),
+         rev_fuel_100 = sum(100 * 14860 * lpg, na.rm = TRUE),
+         nat_100 = (rev_nat_100/nrow(.))/14860,
+         int_100 = (rev_int_100/nrow(.))/14860,
+         elec_100 = (rev_elec_100/nrow(.))/14860,
+         fuel_100 = (rev_fuel_100/nrow(.))/14860)
+
+recyc_120 <- e_hh_agg %>% 
+  mutate(rev_nat_120 = sum(120 * 14860 * national, na.rm = TRUE),
+         rev_int_120 = sum(120 * 14860 * national_import, na.rm = TRUE),
+         rev_elec_120 = sum(120 * 14860 * electricity, na.rm = TRUE),
+         rev_fuel_120 = sum(120 * 14860 * lpg, na.rm = TRUE),
+         nat_120 = (rev_nat_120/nrow(.))/14860,
+         int_120 = (rev_int_120/nrow(.))/14860,
+         elec_120 = (rev_elec_120/nrow(.))/14860,
+         fuel_120 = (rev_fuel_120/nrow(.))/14860)
+
+
+recyc_all <- bind_cols(
+  recyc_2[,9:12],
+  recyc_40[,9:12],
+  recyc_100[,9:12],
+  recyc_120[,9:12]) %>% 
+  distinct_all() %>% 
+  pivot_longer(1:16, names_to = "scene", values_to = "trf") %>% 
+  separate(col = "scene", into = c("scene", "rate"), sep = "_") %>% 
+  pivot_wider(., names_from = scene, values_from = trf) 
+
+
+print(
+  kable(recyc_all,
+        caption = "",
+        digits = 0,
+        format="latex", 
+        booktabs=TRUE) %>%
+    column_spec(1, width = "4cm") %>% 
+    kable_styling(font_size = 8),
+  size = "\\fontsize{8pt}{10pt}\\selectfont",
+  floating = TRUE, 
+  latex.environments = "center",
+  caption.placement = "top",
+  math.style.exponents = TRUE,
+  file = "")
+
+percent_blt <- bind_cols(
+  recyc_2[,9:12],
+  recyc_40[,9:12],
+  recyc_100[,9:12],
+  recyc_120[,9:12]) %>% 
+  distinct_all() %>% 
+  pivot_longer(1:16, names_to = "scene", values_to = "percent") %>% 
+  mutate(percent = 100/percent*100) %>% 
+  separate(col = "scene", into = c("scene", "rate"), sep = "_") %>% 
+  mutate(percent = case_when(percent >100 ~ 100, percent <= 100 ~ percent)) %>% 
+  pivot_wider(., names_from = scene, values_from = percent) 
+
+print(
+  kable(percent_blt,
+        caption = "",
+        digits = 0,
+        format="latex", 
+        booktabs=TRUE) %>%
+    column_spec(1, width = "4cm") %>% 
+    kable_styling(font_size = 8),
+  size = "\\fontsize{8pt}{10pt}\\selectfont",
+  floating = TRUE, 
+  latex.environments = "center",
+  caption.placement = "top",
+  math.style.exponents = TRUE,
+  file = "")
 
