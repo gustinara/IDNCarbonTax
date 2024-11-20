@@ -263,7 +263,7 @@ rm(lpg_join)
 
 #Mapping household survey expenditure data into exiobase classification
 y_hh_map_exiobase <- data.frame(
-  result = (mapply('*', Hh_IDN_EXIOBASE_rep, y_idn_share))
+  result = (mapply('*', Hh_IDN_EXIOBASE, y_idn_share))
   )
 gc()
 
