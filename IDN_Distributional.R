@@ -289,22 +289,22 @@ for (i in seq(1, 315672, by = chunk_size)) {
 }
 
 rm(y_hh_map_exiobase)
-# 
-# e_hh_mapped12 <- bind_rows(readRDS("Data/e_hh_mapped1.rds"),
-#                          readRDS("Data/e_hh_mapped2.rds"))
-# 
-# gc()
-# 
-# e_hh_mapped34 <- bind_rows(readRDS("Data/e_hh_mapped3.rds"),
-#                          readRDS("Data/e_hh_mapped4.rds"))
-# 
-# gc()
-# 
-# e_hh_mapped <- bind_rows(e_hh_mapped12,e_hh_mapped34)
-# 
-# rm(e_hh_mapped12, e_hh_mapped34)
-# 
-# gc()
+
+e_hh_mapped12 <- bind_rows(readRDS("Data/e_hh_mapped1.rds"),
+                          readRDS("Data/e_hh_mapped2.rds"))
+ 
+gc()
+ 
+e_hh_mapped34 <- bind_rows(readRDS("Data/e_hh_mapped3.rds"),
+                          readRDS("Data/e_hh_mapped4.rds"))
+ 
+gc()
+ 
+e_hh_mapped <- bind_rows(e_hh_mapped12,e_hh_mapped34)
+ 
+rm(e_hh_mapped12, e_hh_mapped34)
+ 
+gc()
 
 ## 2.6.1 National + Imported scenario --------
 e_hh_int <- Reduce(`+`, split.default(e_hh_mapped, (seq_along(e_hh_mapped) - 1) %/% 200)) %>% 
@@ -658,11 +658,11 @@ for (i in tax_rate){
 
 
 netimp_all <- bind_rows(list_df_rate) %>% 
-  mutate(Scenario = case_when(Scenario == "national" ~ "National",
-                              Scenario == "national_import" ~ "National + Import",
-                              Scenario == "electricity" ~ "National Electricity",
-                              Scenario == "lpg" ~ "National Fuel")) %>% 
-  mutate(Scenario = factor(Scenario, c("National", "National + Import", "National Electricity", "National Fuel")))
+  mutate(Scenario = case_when(Scenario == "national" ~ "National Economy-wide",
+                              Scenario == "national_import" ~ "National + Import Economy-wide",
+                              Scenario == "electricity" ~ "National Electricity-only",
+                              Scenario == "lpg" ~ "National Fuel-only")) %>% 
+  mutate(Scenario = factor(Scenario, c("National Economy-wide", "National + Import Economy-wide", "National Electricity-only", "National Fuel-only")))
 
 
 # $2 tax rate
@@ -680,7 +680,7 @@ ggplot(netimp_all %>%
   scale_x_continuous(breaks = c(seq(from = 1, to = 10)), limits = c(1, 10)) +
   scale_y_continuous(labels = scales::percent_format()) +
   theme_pander(base_family = "Times") +
-  facet_wrap(~Scenario, scales = "free", ncol = 2) +
+  facet_wrap(~Scenario, scales = "free", ncol = 2, labeller = labeller(Scenario = label_wrap_gen(10))) +
   theme(plot.title = element_text(size = 24, hjust = .5, vjust = 2.5),
         plot.subtitle = element_text(size = 20, hjust = .5, vjust = 2.5),
         plot.caption = element_text(vjust = 4.5),
@@ -721,7 +721,7 @@ ggplot(netimp_all %>%
   scale_x_continuous(breaks = c(seq(from = 1, to = 10)), limits = c(1, 10)) +
   scale_y_continuous(labels = scales::percent_format()) +
   theme_pander(base_family = "Times") +
-  facet_wrap(~Scenario, scales = "free", ncol = 2) +
+  facet_wrap(~Scenario, scales = "free", ncol = 2, labeller = labeller(Scenario = label_wrap_gen(10))) +
   theme(plot.title = element_text(size = 24, hjust = .5, vjust = 2.5),
         plot.subtitle = element_text(size = 20, hjust = .5, vjust = 2.5),
         plot.caption = element_text(vjust = 4.5),
@@ -762,7 +762,7 @@ ggplot(netimp_all %>%
   scale_x_continuous(breaks = c(seq(from = 1, to = 10)), limits = c(1, 10)) +
   scale_y_continuous(labels = scales::percent_format()) +
   theme_pander(base_family = "Times") +
-  facet_wrap(~Scenario, scales = "free", ncol = 2) +
+  facet_wrap(~Scenario, scales = "free", ncol = 2, labeller = labeller(Scenario = label_wrap_gen(10))) +
   theme(plot.title = element_text(size = 24, hjust = .5, vjust = 2.5),
         plot.subtitle = element_text(size = 20, hjust = .5, vjust = 2.5),
         plot.caption = element_text(vjust = 4.5),
@@ -802,7 +802,7 @@ ggplot(netimp_all %>%
   scale_x_continuous(breaks = c(seq(from = 1, to = 10)), limits = c(1, 10)) +
   scale_y_continuous(labels = scales::percent_format()) +
   theme_pander(base_family = "Times") +
-  facet_wrap(~Scenario, scales = "free", ncol = 2) +
+  facet_wrap(~Scenario, scales = "free", ncol = 2, labeller = labeller(Scenario = label_wrap_gen(10))) +
   theme(plot.title = element_text(size = 24, hjust = .5, vjust = 2.5),
         plot.subtitle = element_text(size = 20, hjust = .5, vjust = 2.5),
         plot.caption = element_text(vjust = 4.5),
